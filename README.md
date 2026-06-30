@@ -1,64 +1,139 @@
-# PhySR-FNO reservoir super-resolution
 
-Refactored contest-ready project for physics-informed super-resolution of two-phase water-oil filtration fields.
+# PhySR-FNO: физически-информированное сверхразрешение для моделирования двухфазной фильтрации
 
-The repository keeps the original notebooks as a research archive and exposes the core code as importable modules under `src/physr_fno`.
+> Быстрое восстановление высокоразрешённых полей давления и водонасыщенности в неоднородных нефтяных пластах с помощью физически-информированного суперразрешения и нейронного оператора фурье.
 
-## Structure
+## О проекте
+
+Этот репозиторий содержит реализацию **PhySR-FNO** — модели физически-информированного сверхразрешения для ускорения моделирования двухфазной фильтрации вода–нефть в неоднородной пористой среде.
+
+Классические конечно-объёмные методы надёжны для задач моделирования пластов, но высокоразрешённые расчёты требуют много вычислительных ресурсов. В то же время стандартные PINN-подходы плохо справляются с резкими фронтами насыщенности, которые возникают в задачах типа Бакли — Леверетта.
+
+Проект был разработан в рамках бакалаврской выпускной квалификационной работы, посвящённой сравнению численных методов, PINN-подходов и физически-информированного сверхразрешения для задачи двухфазной фильтрации.
+
+Главная сложность задачи — наличие резких движущихся фронтов насыщенности. Такие фронты плохо аппроксимируются стандартными нейросетевыми методами, потому что решение является транспортно-доминированным и негладким.
+
+## Метод
+
+Общий пайплайн проекта:
+
+1. Генерация высокоразрешённых эталонных траекторий с помощью конечно-объёмного солвера.
+2. Пространственное и временное понижение разрешения для получения low-resolution входов.
+3. Интерполяция low-resolution данных до целевой сетки.
+4. Предсказание residual-поправки с помощью PhySR-FNO.
+5. Жёсткое наложение физических ограничений и граничных условий.
+6. Оценка качества реконструкции, сохранения фронта насыщенности, физической допустимости и скорости инференса.
+
+Модель предсказывает не всё поле напрямую, а поправку к интерполированному baseline:
 
 ```text
-notebooks/
-  research_archive/
-    PhySR_solver_updated.ipynb
-    DB_AFNO_dataset_metrics_final.ipynb
-    PiRD_dataset_metrics.ipynb
-    PhySR_FNO_solver_updated.ipynb
+u_hat_HR = u_interp + [delta_P, delta_S]
+````
 
-src/
-  physr_fno/
-    models/
-      physr_fno.py
-      baselines/
-        physr.py
-        pird.py
-        db_afno.py
-        epinn.py
-    solvers/
-      finite_volume.py
-    losses/
-      physics.py
-    evaluation/
-      metrics.py
+где:
 
-scripts/
-  train_physr_fno.py
-  train_baseline_epinn.py
-  train_baseline_physr.py
-  train_baseline_pird.py
-  train_baseline_db_afno.py
-  evaluate_all.py
+* `u_interp` — интерполированное низкоразрешённое поле;
+* `delta_P` — поправка к давлению;
+* `delta_S` — поправка к водонасыщенности.
+
+## Архитектура
+
+PhySR-FNO использует отдельные энкодеры для динамических и статических признаков.
+
+Динамический вход:
+
+```text
+[P_LR, S_LR]
 ```
 
-## Smoke test
+Статический вход:
+
+```text
+[K, H, m, injector_mask, producer_mask, coordinates]
+```
+
+
+
+
+![Архитектура PhySR-FNO](assets/physr(1).png)
+Основная модель, **PhySR-FNO**, объединяет:
+
+- residual super-resolution;
+- Fourier Neural Operator блоки;
+- кодирование статических свойств пласта;
+- жёсткое наложение граничных условий;
+- физически-информированную функцию потерь;
+- дополнительные loss-компоненты для сохранения фронта насыщенности.
+
+После интерполяции входные поля проходят через сверточные энкодеры, объединяются со статическими признаками пласта и затем обрабатываются FNO-блоками. На выходе модель предсказывает residual-поправки для давления и насыщенности.
+
+Ключевая часть модели — блоки Fourier Neural Operator (FNO). В отличие от обычных сверточных слоев, которые видят только локальную область вокруг каждой ячейки, FNO обрабатывает поле в частотной области. Для этого признаки переводятся с помощью FFT в пространство Фурье, где модель обучает спектральные веса для выбранных частотных мод. После этого результат возвращается обратно в физическое пространство через обратное преобразование Фурье.
+
+Пример работы модели 
+
+![Пример](assets/image33.gif)
+## Основные результаты
+
+### Synthetic ×8 benchmark
+
+| Модель    | Ошибка давления ↓ | Ошибка насыщенности ↓ | Balanced error ↓ | Front IoU ↑ | Ускорение относительно FV ↑ |
+| --------- | ----------------: | --------------------: | ---------------: | ----------: | --------------------------: |
+| PhySR-FNO |            2.435% |                6.032% |           4.233% |      0.9564 |                       1105× |
+| PhySR     |            6.301% |               13.648% |           9.974% |      0.8858 |                        951× |
+| PiRD      |           20.823% |               26.027% |          23.425% |      0.6907 |                        171× |
+| DB-AFNO   |           11.124% |               25.663% |          18.393% |      0.6742 |                        724× |
+
+На наиболее сложном synthetic ×8 benchmark модель PhySR-FNO показывает наименьшую ошибку восстановления и лучше всего сохраняет геометрию фронта насыщенности.
+
+### Влияние коэффициента увеличения разрешения
+
+| Масштаб | Ошибка давления ↓ | Ошибка насыщенности ↓ | Front IoU ↑ | Нарушения границ насыщенности ↓ |
+| ------- | ----------------: | --------------------: | ----------: | ------------------------------: |
+| ×2      |            0.610% |                1.692% |      0.9887 |                               0 |
+| ×4      |            1.129% |                2.945% |      0.9802 |                               0 |
+| ×8      |            2.435% |                6.032% |      0.9564 |                               0 |
+
+Качество ожидаемо снижается при переходе к более грубому входу, однако модель сохраняет физически допустимые значения насыщенности и стабильно улучшает результат по сравнению с прямой интерполяцией.
+
+### SPE10-based reservoirs
+
+| Датасет  | Ошибка давления ↓ | Ошибка насыщенности ↓ | Balanced error ↓ | Front IoU ↑ | Ускорение относительно FV ↑ |
+| -------- | ----------------: | --------------------: | ---------------: | ----------: | --------------------------: |
+| SPE10 ×8 |            4.282% |                6.928% |           5.605% |      0.9232 |                        626× |
+
+Эксперимент на SPE10 показывает, что модель работает не только на синтетических структурах, но и на более реалистичных неоднородных полях проницаемости.
+
+## Установка
+
+Проект тестировался на Linux с Python 3.10+.
 
 ```bash
-python -m pip install -e .
-python scripts/evaluate_all.py --mini
-python scripts/train_physr_fno.py --mini
-python scripts/train_baseline_epinn.py --mini
+python3 -m venv .venv
+source .venv/bin/activate
+
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+python3 -m pip install .
 ```
 
-The `--mini` mode generates a tiny synthetic finite-volume sample on a 16×16 grid, builds a 4×4 low-resolution input, instantiates PhySR-FNO and the SR baselines, and runs a forward/evaluation pass. The ePINN smoke script trains the pressure branch on one FV-generated frame using graph-augmented cell features and a small finite-volume pressure residual term.
+На Ubuntu лучше использовать `python3`, так как команда `python` может быть недоступна по умолчанию.
 
-## Baselines
+## Быстрый запуск
 
-- Finite-volume synthetic data generator/reference solver
-- ePINN pressure baseline with mini smoke-training entry point
-- PhySR ConvLSTM super-resolution baseline
-- PiRD diffusion-style residual reconstruction baseline
-- DB-AFNO dual-branch adaptive Fourier neural operator baseline
-- Proposed PhySR-FNO model
+```bash
+python3 scripts/evaluate_all.py  --device gpu
+```
 
-## Notes
+Ожидаемые выходные файлы:
 
-The notebooks in `notebooks/research_archive/` are preserved as the original research logs. The scripts are intentionally lightweight smoke-test entry points; full reproduction should connect them to the original HDF5 datasets/checkpoints and longer training configs.
+```text
+results/RUN_REPORT.md
+results/smoke_metrics_after_install.json
+```
+
+Запуск на GPU:
+
+```bash
+python3 scripts/evaluate_all.py --mini --device cuda
+```
+
