@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "physr-fno-reservoir"
+version = "0.1.0"
+description = "Physics-informed super-resolution and neural-operator baselines for two-phase reservoir flow."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Sofia Gamershmidt" }]
+dependencies = [
+  "numpy",
+  "scipy",
+  "torch",
+  "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

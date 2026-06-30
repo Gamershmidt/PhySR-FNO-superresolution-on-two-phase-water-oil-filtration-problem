@@ -1,0 +1,7 @@
+nx_hr: 64
+ny_hr: 64
+nt_hr: 30
+s_up: 8
+t_up: 3
+sat_substeps: 30
+n_cases: 80
